@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>PDF Jam</title>
+
+    <script src="pdf.min.js"></script>
+    <script src="download.min.js"></script>
+
+    <link rel="stylesheet" href="style.css" type="text/css"/>
+
+    <script>
+        class Setting extends HTMLElement {
+
+            #childrenRegistered = false;
+            #valueElements = [];
+            #names = [];
+
+            constructor() {
+                super();
+                const el = document.createElement('div');
+                el.innerHTML = `
+                <div>
+                    <input type="checkbox" id="settingEnabled" name="settingEnabled">
+                    <label id="label" for="settingEnabled"></label>
+                </div>
+                <slot></slot>
+                `;
+                this.attachShadow({mode: 'open'});
+                this.shadowRoot.append(el);
+            }
+
+            static get observedAttributes() {
+                return ['names', 'desc', 'value-elements'];
+            }
+
+            attributeChangedCallback(name, oldValue, newValue) {
+                console.log(name + " " + oldValue + " " + newValue);
+                if (name === 'desc') {
+                    this.shadowRoot.querySelector('#label').textContent = newValue;
+                } else if (name === 'value-elements') {
+                    if (this.#childrenRegistered) {
+                        this.#valueElements = [];
+                        newValue.split(",").forEach(element => {
+                            this.#valueElements.push(document.querySelector(element));
+                        });
+                    }
+                } else if (name === 'names') {
+                    this.#names = newValue.split(",");
+                }
+            }
+
+            registerChildren() {
+                if (!this.#childrenRegistered) {
+                    if (this.hasAttribute("value-elements")) {
+                        this.getAttribute("value-elements").split(",").forEach(element => {
+                            this.#valueElements.push(document.querySelector(element));
+                        });
+                    }
+                    this.#childrenRegistered = true;
+                }
+            }
+
+            get value() {
+                const val = {};
+                if (this.#names.length === 1 && this.#valueElements.length === 0) {
+                    val[this.#names[0]] = this.selected;
+                } else {
+                    // console.log(this.#valueElements);
+                    for (let i = 0; i < this.#valueElements.length && i < this.#names.length; i++) {
+                        val[this.#names[i]] = this.#valueElements[i].value;
+                    }
+                }
+                return val;
+            }
+
+            get selected() {
+                return this.shadowRoot.querySelector('#settingEnabled').checked;
+            }
+        }
+        customElements.define('pdf-setting', Setting);
+
+        var pdf = undefined;
+        var pdfFilename = undefined;
+        var width = 0;
+        var height = 0;
+
+        const pdfHeight = 300;
+        const pdfjsLib = window['pdfjs-dist/build/pdf'];
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+
+        function findParentByClass(el, className) {
+            let parent = el;
+            while (!parent.classList.contains(className)) {
+                parent = parent.parentElement;
+            }
+            return parent;
+        }
+
+        function insertAfter(newNode, existingNode) {
+            existingNode.parentNode.insertBefore(newNode, existingNode.nextSibling);
+        }
+
+        function decodePaperSize(width, height) {
+            console.log(width + "x" + height);
+            if (width === 210 && height === 297) {
+                return "A4";
+            } else if (width === 841 && height === 1189) {
+                return "A0";
+            } else if (width === 594 && height === 841) {
+                return "A1";
+            } else if (width === 420 && height === 594) {
+                return "A2";
+            } else if (width === 297 && height === 420) {
+                return "A3";
+            } else if (width === 148 && height === 210) {
+                return "A5";
+            } else if (width === 105 && height === 148) {
+                return "A6";
+            } else if (width === 74 && height === 105) {
+                return "A7";
+            } else if (width === 52 && height === 74) {
+                return "A8";
+            }
+            return undefined;
+        }
+
+        function pt2mm(pt) {
+            return Math.round(pt / 72 * 25.4);
+        }
+
+        function filename(filename) {
+            const lastPoint = filename.lastIndexOf('.');
+            if (lastPoint < 1) {
+                return filename;
+            }
+            return filename.substring(0, lastPoint);
+        }
+
+        function showPDF(file, container) {
+            const loadingTask = pdfjsLib.getDocument(file);
+            loadingTask.promise.then(pdf => {
+                container.replaceChildren();
+
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    pdf.getPage(i).then(page => {
+
+                        if (i === 1) {
+                            let sizeInfo = "";
+                            try {
+                                const [x, y, w, h] = page.view;
+                                width = pt2mm(w - x);
+                                height = pt2mm(h - y);
+                                const landscape = (page.rotate % 180 !== 0) === (height > width);
+                                console.log(width + "x" + height);
+                                const paperFormat = width > height
+                                    ? decodePaperSize(height, width)
+                                    : decodePaperSize(width, height);
+                                const paperSize = (page.rotate % 180 !== 0)
+                                    ? `${height} x ${width} mm`
+                                    : `${width} x ${height} mm`;
+
+                                if (paperFormat) {
+                                    sizeInfo = paperFormat;
+                                    if (landscape) {
+                                        sizeInfo += " quer";
+                                    }
+                                    sizeInfo += ` (${paperSize})`;
+                                } else {
+                                    sizeInfo = paperSize;
+                                }
+                            } catch(e) {
+                                console.log(e);
+                                sizeInfo = "unbekannt";
+                            }
+                            document.querySelector("#document-attributes").innerHTML = `${pdf.numPages} Seite${pdf.numPages!=1?'n':''} | ${sizeInfo}`;
+                        }
+
+                        const viewport = page.getViewport({ scale: pdfHeight / page.getViewport({ scale: 1 }).height });
+
+                        // Prepare canvas using PDF page dimensions
+                        const canvas = document.createElement('canvas');
+                        container.appendChild(canvas);
+
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+
+                        // Render PDF page into canvas context
+                        const renderContext = {
+                            canvasContext: context,
+                            viewport: viewport
+                        };
+                        const renderTask = page.render(renderContext);
+                        // renderTask.promise.then(console.log('Page rendered'));
+                    });
+                }
+
+
+            }, reason => {
+                // PDF loading error
+                console.error(reason);
+            });
+        }
+
+        function convert(preview, callback) {
+            if (!pdf) {
+                return;
+            }
+
+            const baseSettings = {
+                preview: preview,
+                file: pdf
+            };
+
+            const settings = [...document.querySelectorAll('pdf-setting')]
+                                .filter(el => el.selected)
+                                .map(el => el.value)
+                                .reduce((s1, s2) => ({...s1, ...s2}), baseSettings);
+
+            if (!settings.paper) {
+                settings.xpapersize = width + "mm";
+                settings.ypapersize = height + "mm";
+            }
+
+            console.log(settings);
+
+            const data = new FormData();
+            data.append("settings", JSON.stringify(settings));
+
+            fetch("process.php", {
+                method: "POST",
+                body: data
+            }).then(callback);
+        }
+
+        window.addEventListener("DOMContentLoaded", (ev) => {
+            const dropEl = document.querySelector("#drop");
+            dropEl.addEventListener("dragover", ev => {
+                ev.preventDefault();
+                document.querySelector("#drop").classList.add("drag-over");
+                document.querySelector("#progress").style.width = "0%";
+            });
+            dropEl.addEventListener("dragenter", ev => {
+                document.querySelector("#drop").classList.add("drag-over");
+                document.querySelector("#progress").style.width = "0%";
+            });
+            dropEl.addEventListener("dragend", ev => {
+                document.querySelector("#drop").classList.remove("drag-over");
+            });
+            dropEl.addEventListener("dragleave", ev => {
+                document.querySelector("#drop").classList.remove("drag-over");
+            });
+            dropEl.addEventListener("drop", ev => {
+                ev.preventDefault();
+
+                if (ev.dataTransfer.items) {
+                    // Use DataTransferItemList interface to access the file(s)
+                    for (let i = 0; i < ev.dataTransfer.items.length; i++) {
+                        // If dropped items aren't files, reject them
+                        if (ev.dataTransfer.items[i].kind === 'file') {
+                            const file = ev.dataTransfer.items[i].getAsFile();
+                            console.log('... file[' + i + '].name = ' + file.name);
+                            console.log(file);
+
+                            pdfFilename = filename(file.name);
+
+                            // preview
+                            file.arrayBuffer().then(data => {
+                                showPDF(data, document.querySelector("#input-preview"));
+                                document.querySelector("#input-preview-card").classList.remove("hidden");
+                                document.querySelector("#input-preview-card").classList.add("show");
+                            });
+
+                            // upload
+                            const data = new FormData();
+                            data.append("file", file);
+
+                            const progress = document.querySelector("#progress");
+                            progress.style.width = "0%";
+                            progress.style.backgroundColor = "";
+
+                            const upload = new XMLHttpRequest();
+                            upload.responseType = 'json';
+                            upload.upload.onprogress = (ev) => {
+                                progress.style.width = (ev.loaded/ev.total*100) + "%";
+                            };
+                            upload.onloadend = () => {
+                                document.querySelector("#drop").classList.remove("drag-over");
+                                if (upload.status == 200) {
+                                    progress.style.width = "100%";
+                                    progress.style.backgroundColor = "green";
+                                } else {
+                                    progress.style.backgroundColor = "red";
+                                }
+                            };
+                            upload.onload = () => {
+                                if (upload.status == 200) {
+                                    pdf = upload.response.file;
+                                }
+                            };
+                            upload.open("POST", "upload.php");
+                            upload.send(data);
+
+                            break; // stop after first file
+                        }
+                    }
+                } //else {
+                //     // Use DataTransfer interface to access the file(s)
+                //     for (var i = 0; i < ev.dataTransfer.files.length; i++) {
+                //         console.log('... file[' + i + '].name = ' + ev.dataTransfer.files[i].name);
+                //     }
+                // }
+            });
+
+            document.querySelector("#generate-preview").addEventListener("click", () => {
+                convert(true, (response) => {
+                    if (response.ok) {
+                        response.arrayBuffer().then(data => {
+                            showPDF(data, document.querySelector("#output-preview"));
+                            document.querySelector("#output-preview-card").classList.remove("hidden");
+                            document.querySelector("#output-preview-card").classList.add("show");
+                        });
+                    } else {
+                        response.json().then(console.log);
+                    }
+                })
+            });
+
+            document.querySelector("#download").addEventListener("click", () => {
+                convert(false, (response) => {
+                    if (response.ok) {
+                        response.blob().then(data => download(data, pdfFilename + "-jam.pdf", "application/octet-stream"));
+                    } else {
+                        response.json().then(console.log);
+                    }
+                });
+            });
+
+            document.querySelectorAll("pdf-setting").forEach(setting => setting.registerChildren());
+        });
+    </script>
+
+</head>
+
+<body style="min-height: 100%;">
+
+    <div id="drop" class="dropzone">
+        <div class="message">PDF hier ablegen</div>
+        <div id="upload">
+            <div id="progress"></div>
+        </div>
+    </div>
+
+    <div id="input-preview-card" class="card card-animated hidden">
+        <div id="document-attributes" class="attribute-box"></div>
+        <div id="input-preview" class="pdf-grid"></div>
+    </div>
+
+    <settings>
+        <pdf-setting names="pages" desc="Seiten" value-elements="#pagerange">
+            <div>
+                <input type="text" id="pagerange" pattern="((?:\d*-\d*|\d+|_)(?:,(?:\d*-\d*|\d+|_))*)">
+            </div>
+            <div class="hint-box">
+                <i class="gg-info"></i> Beispiele:
+                <p><span class="mono">-</span> = alle Seiten</p>
+                <p><span class="mono">4-</span> = ab Seite 4 bis Ende</p>
+                <p><span class="mono">-5</span> = von Seite 1 bis 5</p>
+                <p><span class="mono">_</span> = leere Seite einfügen</p>
+                <p><span class="mono">1-5,9-10</span> = Seitenbereiche 1-5 und 9-10</p>
+                <p><span class="mono">1,1,1,5-</span> = 3x Seite 1 und ab Seite 5 bis Ende</p>
+            </div>
+        </pdf-setting>
+        <pdf-setting names="paper" desc="Format" value-elements="#papersize">
+            <div>
+                <input type="text" id="papersize" list="papersizes">
+                <datalist id="papersizes">
+                    <option value="A0">
+                    <option value="A1">
+                    <option value="A2">
+                    <option value="A3">
+                    <option value="A4">
+                    <option value="A5">
+                    <option value="A6">
+                    <option value="A7">
+                </datalist>
+            </div>
+        </pdf-setting>
+        <pdf-setting names="landscape" desc="Querformat"></pdf-setting>
+        <pdf-setting names="xnup,ynup" desc="Seiten pro Blatt" value-elements="#xnup,#ynup">
+            <div>
+                <input type="number" min="1" id="xnup"> &#215; <input type="number" min="1" id="ynup">
+            </div>
+        </pdf-setting>
+        <pdf-setting names="reverse" desc="Reihenfolge umkehren"></pdf-setting>
+        <!-- Booklet Option? -->
+    </settings>
+
+    <div>
+        <div id="generate-preview" class="button">Vorschau</div>
+    </div>
+
+    <div id="output-preview-card" class="card card-animated hidden">
+        <div id="output-preview" class="pdf-grid"></div>
+    </div>
+
+    <div>
+        <div id="download" class="button">Herunterladen</div>
+    </div>
+
+</body>
+
+</html>
