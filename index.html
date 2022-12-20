@@ -104,7 +104,6 @@
         }
 
         function decodePaperSize(width, height) {
-            console.log(width + "x" + height);
             if (width === 210 && height === 297) {
                 return "A4";
             } else if (width === 841 && height === 1189) {
@@ -139,22 +138,24 @@
             return filename.substring(0, lastPoint);
         }
 
-        function showPDF(file, container) {
+        function showPDF(file, container, showInfo) {
             const loadingTask = pdfjsLib.getDocument(file);
             loadingTask.promise.then(pdf => {
                 container.replaceChildren();
+
 
                 for (let i = 1; i <= pdf.numPages; i++) {
                     pdf.getPage(i).then(page => {
 
                         if (i === 1) {
-                            let sizeInfo = "";
+                            const info = {
+                                pages: pdf.numPages
+                            };
                             try {
                                 const [x, y, w, h] = page.view;
                                 width = pt2mm(w - x);
                                 height = pt2mm(h - y);
                                 const landscape = (page.rotate % 180 !== 0) === (height > width);
-                                console.log(width + "x" + height);
                                 const paperFormat = width > height
                                     ? decodePaperSize(height, width)
                                     : decodePaperSize(width, height);
@@ -163,19 +164,20 @@
                                     : `${width} x ${height} mm`;
 
                                 if (paperFormat) {
-                                    sizeInfo = paperFormat;
+                                    info.size = paperFormat;
                                     if (landscape) {
-                                        sizeInfo += " quer";
+                                        info.size += " quer";
                                     }
-                                    sizeInfo += ` (${paperSize})`;
+                                    info.size += ` (${paperSize})`;
                                 } else {
-                                    sizeInfo = paperSize;
+                                    info.size = paperSize;
                                 }
                             } catch(e) {
                                 console.log(e);
-                                sizeInfo = "unbekannt";
                             }
-                            document.querySelector("#document-attributes").innerHTML = `${pdf.numPages} Seite${pdf.numPages!=1?'n':''} | ${sizeInfo}`;
+                            if (showInfo) {
+                                showInfo(info);
+                            }
                         }
 
                         const viewport = page.getViewport({ scale: pdfHeight / page.getViewport({ scale: 1 }).height });
@@ -197,7 +199,6 @@
                         // renderTask.promise.then(console.log('Page rendered'));
                     });
                 }
-
 
             }, reason => {
                 // PDF loading error
@@ -262,14 +263,17 @@
                         // If dropped items aren't files, reject them
                         if (ev.dataTransfer.items[i].kind === 'file') {
                             const file = ev.dataTransfer.items[i].getAsFile();
-                            console.log('... file[' + i + '].name = ' + file.name);
-                            console.log(file);
-
                             pdfFilename = filename(file.name);
 
                             // preview
                             file.arrayBuffer().then(data => {
-                                showPDF(data, document.querySelector("#input-preview"));
+                                showPDF(data, document.querySelector("#input-preview"), info => {
+                                    let infoString = `${info.pages} Seite${info.pages!=1?'n':''}`;
+                                    if (info.size) {
+                                        infoString += ` | ${info.size}`;
+                                    }
+                                    document.querySelector("#document-attributes").innerHTML = infoString;
+                                });
                                 document.querySelector("#input-preview-card").classList.remove("hidden");
                                 document.querySelector("#input-preview-card").classList.add("show");
                             });
@@ -330,10 +334,15 @@
             });
 
             document.querySelector("#download").addEventListener("click", () => {
+                document.querySelector("#download span").classList.add("loading");
                 convert(false, (response) => {
                     if (response.ok) {
-                        response.blob().then(data => download(data, pdfFilename + "-jam.pdf", "application/octet-stream"));
+                        response.blob().then(data => {
+                            download(data, pdfFilename + "-jam.pdf", "application/octet-stream");
+                            document.querySelector("#download span").classList.remove("loading");
+                        });
                     } else {
+                        document.querySelector("#download span").classList.remove("loading");
                         response.json().then(console.log);
                     }
                 });
@@ -408,7 +417,7 @@
     </div>
 
     <div>
-        <div id="download" class="button">Herunterladen</div>
+        <div id="download" class="button">Herunterladen <span></span></div>
     </div>
 
 </body>
