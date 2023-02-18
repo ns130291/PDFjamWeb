@@ -50,7 +50,7 @@ function reducePageRange($range, $maxPages, $numPages) {
 function error($reason) {
     header('Content-Type: application/json; charset=utf-8');
     http_response_code(500);
-    echo '{"error": "' . $reason . '"}';
+    echo '{"error":"' . $reason . '"}';
     exit;
 }
 
